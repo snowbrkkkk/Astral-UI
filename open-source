@@ -1,0 +1,1133 @@
+local AstralLib = {}
+
+-- [[ DEPENDÊNCIAS INTERNAS ]] --
+local Junkie = loadstring(game:HttpGet("https://jnkie.com/sdk/library.lua"))()
+local Icons = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/Icons/main/Main-v2.lua"))()
+Icons.SetIconsType("lucide")
+
+local Players = game:GetService("Players")
+local CoreGui = game:GetService("CoreGui")
+local TweenService = game:GetService("TweenService")
+local HttpService = game:GetService("HttpService")
+
+-- [[ CONFIGURAÇÃO PADRÃO (Pode ser sobrescrita no Init) ]] --
+AstralLib.Config = {
+    -- Configurações do Junkie SDK
+    Junkie = {
+        Service = "SnowFMR",
+        Identifier = "3797",
+        Provider = "FMR"
+    },
+
+    -- Configurações Visuais/Gerais
+    HubName = "Astral Hub", 
+    FolderName = "AstralConfig",
+    
+    GetKeyButton = true,
+    GetKeyButtonName = "Get Key", 
+    
+    CheckKeyUI = true, 
+    
+    Discord = {
+        Enabled = true, 
+        InviteCode = "ftgs-development-hub-1300692552005189632", 
+        DefaultIcon = "rbxassetid://15403623867" 
+    },
+
+    CustomGetKey = {
+        Enabled = true,
+        Link = "https://junkie-development.de/overview/snowdelicioso"
+    },
+    
+    -- Função ou String a ser executada após validar a Key
+    Callback = nil 
+}
+
+AstralLib.Theme = {
+    Background = Color3.fromRGB(5, 10, 25),
+    Topbar = Color3.fromRGB(10, 16, 32),
+    Card = Color3.fromRGB(12, 18, 40),
+    Input = Color3.fromRGB(11, 16, 35),
+    Border = Color3.fromRGB(35, 45, 90),
+    Accent = Color3.fromRGB(82, 140, 255),
+    AccentAlt = Color3.fromRGB(103, 170, 255),
+    TextMain = Color3.fromRGB(232, 239, 255),
+    TextMuted = Color3.fromRGB(160, 172, 205),
+    TextSoft = Color3.fromRGB(130, 140, 175),
+    Discord = Color3.fromRGB(88, 101, 242),
+    Online = Color3.fromRGB(34, 197, 94),
+    Offline = Color3.fromRGB(113, 113, 122),
+    Error = Color3.fromRGB(255, 60, 60)
+}
+
+-- [[ CONSTANTES E VARIÁVEIS LOCAIS ]] --
+local CUSTOM_FONT_ID = 11702779240
+local JunkieFont = Font.new("rbxassetid://" .. CUSTOM_FONT_ID)
+local JUNKIE_LOGO_ID = "rbxthumb://type=Asset&id=107239748355527&w=150&h=150"
+local ActiveNotifications = {}
+local NotificationGui = nil
+
+-- [REQUEST UNIVERSAL] --
+local http_request = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
+if not http_request then
+    http_request = function(options)
+        if options.Method == "GET" then
+            return { Body = game:HttpGet(options.Url), StatusCode = 200 }
+        end
+        return {Body = "{}", StatusCode = 404}
+    end
+end
+
+-- [[ FUNÇÕES AUXILIARES ]] --
+
+local function ApplyFontRecursive(obj)
+    if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
+        obj.FontFace = JunkieFont
+        if obj:IsA("TextLabel") or obj:IsA("TextBox") then
+            obj.TextTruncate = Enum.TextTruncate.AtEnd
+            obj.ClipsDescendants = true
+        end
+    end
+    for _, v in ipairs(obj:GetChildren()) do
+        ApplyFontRecursive(v)
+    end
+end
+
+local function GetCustomAsset(url, fileName)
+    local getAsset = getcustomasset or getsynasset
+    if not getAsset or not writefile then return AstralLib.Config.Discord.DefaultIcon end
+
+    local path = AstralLib.Config.FolderName .. "/" .. fileName
+    if isfile(path) then return getAsset(path) end
+
+    local success, response = pcall(function()
+        return http_request({
+            Url = url,
+            Method = "GET",
+            Headers = {["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        })
+    end)
+
+    if success and response.StatusCode == 200 and response.Body and #response.Body > 100 then
+        writefile(path, response.Body)
+        return getAsset(path)
+    end
+    
+    return AstralLib.Config.Discord.DefaultIcon
+end
+
+local function GetDiscordInviteData(code)
+    code = code:gsub("https://discord.gg/", ""):gsub("discord.gg/", "")
+    local url = "https://discord.com/api/v10/invites/" .. code .. "?with_counts=true"
+    local success, response = pcall(function() 
+        return http_request({Url = url, Method = "GET"}) 
+    end)
+    if success and response.StatusCode == 200 then
+        local decoded
+        pcall(function() decoded = HttpService:JSONDecode(response.Body) end)
+        return decoded
+    end
+    return nil
+end
+
+local function CreateIcon(iconName, size, parent, position, color)
+    local targetColor = color or Color3.new(1, 1, 1)
+    local icon = Icons.Image({
+        Icon = iconName,
+        Size = UDim2.fromOffset(size, size),
+        Colors = { targetColor },
+    })
+    local frame = icon.IconFrame
+    frame.BackgroundTransparency = 1 
+    frame.BorderSizePixel = 0
+    frame.AnchorPoint = Vector2.new(0.5, 0.5)
+    frame.Position = position
+    frame.Parent = parent
+    local baseZ = (parent and parent.ZIndex or 1) + 1
+    frame.ZIndex = baseZ
+    for _, d in ipairs(frame:GetDescendants()) do
+        if d:IsA("ImageLabel") or d:IsA("ImageButton") then
+            d.BackgroundTransparency = 1 
+            d.ImageColor3 = targetColor 
+            d.ZIndex = baseZ
+        elseif d:IsA("Frame") then
+            d.BackgroundTransparency = 1
+        end
+    end
+    return frame
+end
+
+-- [[ SISTEMA DE ARQUIVOS ]] --
+local function GetFilePaths()
+    return {
+        key = AstralLib.Config.FolderName .. "/keys.txt",
+        time = AstralLib.Config.FolderName .. "/keys_time.txt",
+        counter = AstralLib.Config.FolderName .. "/counter.txt"
+    }
+end
+
+local function readKeys()
+    local paths = GetFilePaths()
+    local keys = {}
+    if isfile and isfile(paths.key) then
+        for line in readfile(paths.key):gmatch("[^\r\n]+") do
+            if line ~= "" then table.insert(keys, line) end
+        end
+    end
+    return keys
+end
+
+local function saveKeys(keysTable) 
+    local paths = GetFilePaths()
+    if writefile then writefile(paths.key, table.concat(keysTable, "\n")) end 
+end
+
+local function readLastKeyDate()
+    local paths = GetFilePaths()
+    if isfile and isfile(paths.time) then
+        local ok, content = pcall(readfile, paths.time)
+        if ok and content ~= "" then return content end
+    end
+    return nil
+end
+
+local function saveLastKeyDateOnce()
+    if not isfile or not readfile or not writefile then return end
+    local paths = GetFilePaths()
+    local current = ""
+    if isfile(paths.time) then
+        local ok, content = pcall(readfile, paths.time)
+        if ok then current = content or "" end
+    end
+    if current == "" then
+        local dateStr = os.date("%d/%m/%Y")
+        writefile(paths.time, dateStr)
+    end
+end
+
+local function readCounter()
+    local paths = GetFilePaths()
+    if isfile and isfile(paths.counter) then
+        local ok, content = pcall(readfile, paths.counter)
+        if ok then local n = tonumber(content) if n then return n end end
+    end
+    return 0
+end
+
+local function saveCounter(n) 
+    local paths = GetFilePaths()
+    if writefile then writefile(paths.counter, tostring(n)) end 
+end
+
+-- [[ SISTEMA DE NOTIFICAÇÃO ]] --
+local function InitNotificationGui()
+    if NotificationGui then return end
+    NotificationGui = Instance.new("ScreenGui")
+    NotificationGui.Name = "AstralNotificationGui"
+    NotificationGui.ResetOnSpawn = false
+    NotificationGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+    NotificationGui.DisplayOrder = 999
+    NotificationGui.Parent = CoreGui
+end
+
+local function LayoutNotifications()
+    local basePos = UDim2.new(1, -20, 1, -40)
+    local spacing = 8
+    local total = #ActiveNotifications
+    for i, data in ipairs(ActiveNotifications) do
+        local frame = data.Frame
+        local idxFromBottom = total - i
+        local offsetY = -(idxFromBottom * (frame.Size.Y.Offset + spacing))
+        local targetPos = basePos + UDim2.new(0, 0, 0, offsetY)
+        TweenService:Create(frame, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = targetPos}):Play()
+    end
+end
+
+local function ShowNotification(kind)
+    InitNotificationGui()
+    local Theme = AstralLib.Theme
+    
+    local NotificationConfig = {
+        invalid = { icon = "circle-x", color = Color3.fromRGB(220, 60, 60), text = "Ops.. Invalid Key!" },
+        valid = { icon = "circle-check", color = Color3.fromRGB(80, 200, 80), text = "Success! Valid Key." },
+        loading = { icon = "circle-ellipsis", color = Theme.Accent, text = "Loading..." },
+        link_ok = { icon = "book-key", color = Theme.AccentAlt, text = "Link Copied to Clipboard!" },
+        link_fail = { icon = "bug", color = Color3.fromRGB(220, 60, 60), text = "Failed to copy link." },
+        discord_join = { icon = "gamepad-2", color = Theme.Discord, text = "Discord Invite Copied!" },
+        hwid_banned = { icon = "shield-alert", color = Theme.Error, text = "Your HWID Is Banned." }
+    }
+
+    local cfg = NotificationConfig[kind]
+    if not cfg then return end
+    
+    local notif = Instance.new("CanvasGroup")
+    notif.Name = "AstralNotification"
+    notif.AnchorPoint = Vector2.new(1, 1)
+    notif.Size = UDim2.new(0, 330, 0, 56)
+    notif.Position = UDim2.new(1, -20, 1, -40)
+    notif.BackgroundColor3 = Theme.Card
+    notif.BackgroundTransparency = 0
+    notif.BorderSizePixel = 0
+    notif.GroupTransparency = 1 
+    notif.ZIndex = 300
+    notif.Parent = NotificationGui
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 10)
+    corner.Parent = notif
+    
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = (kind == "hwid_banned") and cfg.color or Theme.Border
+    stroke.Thickness = (kind == "hwid_banned") and 1.5 or 1
+    stroke.Transparency = (kind == "hwid_banned") and 0.2 or 0.5
+    stroke.Parent = notif
+    
+    local circle = Instance.new("Frame")
+    circle.Name = "IconCircle"
+    circle.Size = UDim2.new(0, 32, 0, 32)
+    circle.Position = UDim2.new(0, 14, 0.5, -16)
+    circle.BackgroundColor3 = Theme.Input
+    circle.BorderSizePixel = 0
+    circle.ZIndex = 302
+    circle.Parent = notif
+    
+    local circleCorner = Instance.new("UICorner")
+    circleCorner.CornerRadius = UDim.new(1, 0)
+    circleCorner.Parent = circle
+    
+    local iconFrame = CreateIcon(cfg.icon, 18, circle, UDim2.new(0.5, 0, 0.5, 0), cfg.color)
+    for _, d in ipairs(iconFrame:GetDescendants()) do 
+        if d:IsA("ImageLabel") then d.ImageTransparency = 1 end 
+    end
+
+    local label = Instance.new("TextLabel")
+    label.BackgroundTransparency = 1
+    label.Position = UDim2.new(0, 60, 0, 0)
+    label.Size = UDim2.new(1, -70, 1, 0)
+    label.FontFace = JunkieFont
+    label.Text = cfg.text
+    label.TextSize = 14
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextColor3 = Theme.TextMain
+    label.ZIndex = 303
+    label.Parent = notif
+    
+    local tIn = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    TweenService:Create(notif, tIn, {GroupTransparency = 0}):Play()
+    
+    table.insert(ActiveNotifications, {Frame = notif})
+    LayoutNotifications()
+    
+    if kind == "hwid_banned" then
+        task.spawn(function()
+            task.wait(0.25)
+            local originalPos = notif.Position
+            local shakeIntensity = 6
+            for i = 1, 6 do
+                local offset = (i % 2 == 0) and shakeIntensity or -shakeIntensity
+                local shakeT = TweenInfo.new(0.05, Enum.EasingStyle.Sine)
+                TweenService:Create(notif, shakeT, {Position = originalPos + UDim2.new(0, offset, 0, 0)}):Play()
+                task.wait(0.05)
+            end
+            TweenService:Create(notif, TweenInfo.new(0.1, Enum.EasingStyle.Sine), {Position = originalPos}):Play()
+        end)
+    end
+    
+    task.spawn(function()
+        task.wait(kind == "hwid_banned" and 4 or 2.5) 
+        local tOut = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+        local tween = TweenService:Create(notif, tOut, {GroupTransparency = 1})
+        tween:Play()
+        tween.Completed:Wait()
+        for i, data in ipairs(ActiveNotifications) do
+            if data.Frame == notif then table.remove(ActiveNotifications, i) break end
+        end
+        notif:Destroy()
+        LayoutNotifications()
+    end)
+end
+
+local function FadeOutGui(rootFrame, duration, onDone)
+    local scale = rootFrame:FindFirstChild("UIScale")
+    if not scale then scale = Instance.new("UIScale", rootFrame) end
+    local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+    TweenService:Create(scale, tweenInfo, {Scale = 0.8}):Play() 
+    if rootFrame:IsA("CanvasGroup") then
+        TweenService:Create(rootFrame, tweenInfo, {GroupTransparency = 1}):Play()
+    end
+    task.delay(duration, function() if onDone then onDone() end end)
+end
+
+-- [[ LÓGICA DE VALIDAÇÃO ]] --
+local function validateKey(userKey)
+    local ok, validation = pcall(function() return Junkie.check_key(userKey) end)
+    
+    if not ok then return false, "error" end
+    
+    if validation then
+        if validation.success or validation.valid then
+            getgenv().SCRIPT_KEY = userKey
+            return true, "valid"
+        else
+            local msg = (validation.message or ""):lower()
+            if string.find(msg, "banned") or string.find(msg, "blacklisted") or string.find(msg, "hwid") then
+                return false, "banned"
+            end
+        end
+    end
+    return false, "invalid"
+end
+
+local function trySavedKey()
+    local keys = readKeys()
+    if #keys == 0 then return false, nil end
+    for _, key in ipairs(keys) do 
+        local success, _ = validateKey(key)
+        if success then return true, key end 
+    end
+    return false, nil
+end
+
+local function RunSuccessCallback()
+    local cb = AstralLib.Config.Callback
+    if type(cb) == "function" then
+        cb()
+    elseif type(cb) == "string" and cb ~= "" then
+        loadstring(cb)()
+    end
+end
+
+-- [[ INTERFACE GRÁFICA: CHECK KEY ]] --
+local function ShowCheckUI()
+    local Theme = AstralLib.Theme
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "AstralCheckGui"
+    gui.ResetOnSpawn = false
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.DisplayOrder = 50
+    gui.Parent = CoreGui
+    
+    local mainFrame = Instance.new("CanvasGroup")
+    mainFrame.Name = "CheckMain"
+    mainFrame.Size = UDim2.new(0, 500, 0, 275)
+    mainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+    mainFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+    mainFrame.BackgroundColor3 = Theme.Background
+    mainFrame.BorderSizePixel = 0
+    mainFrame.GroupTransparency = 1
+    mainFrame.Parent = gui
+    
+    local uiScale = Instance.new("UIScale", mainFrame)
+    uiScale.Scale = 0.8 
+    
+    local corner = Instance.new("UICorner", mainFrame)
+    corner.CornerRadius = UDim.new(0, 12)
+    local stroke = Instance.new("UIStroke", mainFrame)
+    stroke.Color = Theme.Border
+    stroke.Thickness = 1
+    stroke.Transparency = 0.6
+    
+    local linesFrame = Instance.new("Frame")
+    linesFrame.BackgroundTransparency = 1
+    linesFrame.Size = UDim2.new(1, -40, 1, -40)
+    linesFrame.Position = UDim2.new(0, 20, 0, 20)
+    linesFrame.ClipsDescendants = true
+    linesFrame.Parent = mainFrame
+    local function SpawnLine()
+        if not linesFrame.Parent then return end
+        local line = Instance.new("Frame")
+        line.Size = UDim2.new(0, math.random(80, 200), 0, 2)
+        line.Position = UDim2.new(-0.3, 0, math.random(), 0)
+        line.BackgroundColor3 = Theme.Border
+        line.BackgroundTransparency = 0.7
+        line.BorderSizePixel = 0
+        line.ZIndex = 1
+        line.Parent = linesFrame
+        local grad = Instance.new("UIGradient")
+        grad.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, Theme.AccentAlt), ColorSequenceKeypoint.new(1, Theme.Accent) })
+        grad.Parent = line
+        local t = TweenService:Create(line, TweenInfo.new(math.random(18, 26) / 10, Enum.EasingStyle.Linear), {Position = UDim2.new(1.3, 0, line.Position.Y.Scale, 0)})
+        t:Play()
+        t.Completed:Connect(function() line:Destroy() end)
+    end
+    task.spawn(function() while linesFrame.Parent do SpawnLine() task.wait(0.25) end end)
+
+    local circle = Instance.new("Frame")
+    circle.Size = UDim2.new(0, 70, 0, 70)
+    circle.AnchorPoint = Vector2.new(0.5, 0.5)
+    circle.Position = UDim2.new(0.5, 0, 0.42, 0)
+    circle.BackgroundColor3 = Theme.Card
+    circle.BorderSizePixel = 0
+    circle.Parent = mainFrame
+    local circleCorner = Instance.new("UICorner", circle)
+    circleCorner.CornerRadius = UDim.new(1, 0)
+    local circleStroke = Instance.new("UIStroke", circle)
+    circleStroke.Color = Theme.Border
+    circleStroke.Thickness = 1
+    
+    local dots = {}
+    local offsets = {-14, 0, 14}
+    for i = 1, 3 do
+        local d = Instance.new("Frame")
+        d.Size = UDim2.new(0, 8, 0, 8)
+        d.AnchorPoint = Vector2.new(0.5, 0.5)
+        d.Position = UDim2.new(0.5, offsets[i], 0.5, 0)
+        d.BackgroundColor3 = Theme.AccentAlt
+        d.BorderSizePixel = 0
+        d.ZIndex = 3
+        d.Parent = circle
+        local dc = Instance.new("UICorner", d)
+        dc.CornerRadius = UDim.new(1, 0)
+        dots[i] = d
+    end
+    task.spawn(function()
+        local idx = 1
+        while circle.Parent do
+            for i, d in ipairs(dots) do
+                local alpha = (i == idx) and 0 or 0.6
+                TweenService:Create(d, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundTransparency = alpha}):Play()
+            end
+            idx = idx + 1 if idx > #dots then idx = 1 end
+            task.wait(0.18)
+        end
+    end)
+    
+    local barBg = Instance.new("Frame")
+    barBg.Size = UDim2.new(0, 320, 0, 6)
+    barBg.AnchorPoint = Vector2.new(0.5, 0)
+    barBg.Position = UDim2.new(0.5, 0, 0.68, 0)
+    barBg.BackgroundColor3 = Theme.Card
+    barBg.BorderSizePixel = 0
+    barBg.Parent = mainFrame
+    Instance.new("UICorner", barBg).CornerRadius = UDim.new(0, 3)
+    local barFill = Instance.new("Frame")
+    barFill.Size = UDim2.new(0, 0, 1, 0)
+    barFill.BackgroundColor3 = Theme.Accent
+    barFill.BorderSizePixel = 0
+    barFill.Parent = barBg
+    Instance.new("UICorner", barFill).CornerRadius = UDim.new(0, 3)
+    local infoLabel = Instance.new("TextLabel")
+    infoLabel.BackgroundTransparency = 1
+    infoLabel.Size = UDim2.new(1, -40, 0, 20)
+    infoLabel.Position = UDim2.new(0, 20, 0.75, 0)
+    infoLabel.Text = "Checking saved key..."
+    infoLabel.TextColor3 = Theme.TextMuted
+    infoLabel.TextSize = 14
+    infoLabel.TextXAlignment = Enum.TextXAlignment.Center
+    infoLabel.Parent = mainFrame
+    ApplyFontRecursive(mainFrame)
+    
+    task.spawn(function()
+        task.wait(0.1)
+        local tIn = TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+        TweenService:Create(mainFrame, tIn, {GroupTransparency = 0}):Play()
+        TweenService:Create(uiScale, tIn, {Scale = 1}):Play()
+        TweenService:Create(stroke, tIn, {Transparency = 0.4}):Play()
+    end)
+    
+    local barTween = TweenService:Create(barFill, TweenInfo.new(2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = UDim2.new(1, 0, 1, 0)})
+    barTween:Play()
+    barTween.Completed:Connect(function()
+        infoLabel.TextColor3 = Theme.TextMain
+        infoLabel.Text = "Saved Key Found!"
+        for _, d in ipairs(dots) do TweenService:Create(d, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {BackgroundTransparency = 1}):Play() end
+        task.wait(0.2)
+        for _, d in ipairs(dots) do d:Destroy() end
+        local checkIcon = CreateIcon("check", 30, circle, UDim2.new(0.5, 0, 0.5, 0), Theme.AccentAlt)
+        for _, desc in ipairs(checkIcon:GetDescendants()) do
+            if desc:IsA("ImageLabel") or desc:IsA("ImageButton") then
+                desc.ImageTransparency = 1
+                TweenService:Create(desc, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {ImageTransparency = 0}):Play()
+            end
+        end
+        TweenService:Create(circle, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = UDim2.new(0, 76, 0, 76)}):Play()
+        task.wait(0.25)
+        TweenService:Create(circle, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {Size = UDim2.new(0, 70, 0, 70)}):Play()
+        task.wait(1.5)
+        ShowNotification("loading")
+        FadeOutGui(mainFrame, 0.35, function() 
+            gui:Destroy() 
+            RunSuccessCallback() 
+        end)
+    end)
+end
+
+-- [[ INTERFACE GRÁFICA: PRINCIPAL ]] --
+local function CreateAstralKeyUI()
+    local Theme = AstralLib.Theme
+    local Config = AstralLib.Config
+    
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "AstralKeyUI"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.DisplayOrder = 5
+    gui.Parent = CoreGui
+    
+    local mainFrame = Instance.new("CanvasGroup")
+    mainFrame.Name = "Main"
+    mainFrame.Size = UDim2.new(0, 500, 0, 275)
+    mainFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+    mainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+    mainFrame.BackgroundColor3 = Theme.Background
+    mainFrame.BorderSizePixel = 0
+    mainFrame.GroupTransparency = 1 
+    mainFrame.Parent = gui
+    
+    local uiScale = Instance.new("UIScale", mainFrame)
+    uiScale.Scale = 0.8 
+    
+    local mainCorner = Instance.new("UICorner", mainFrame)
+    mainCorner.CornerRadius = UDim.new(0, 12)
+    local mainStroke = Instance.new("UIStroke", mainFrame)
+    mainStroke.Thickness = 1
+    mainStroke.Color = Theme.Border
+    
+    local bubblesFrame = Instance.new("Frame")
+    bubblesFrame.BackgroundTransparency = 1
+    bubblesFrame.Size = UDim2.new(1, -24, 1, -40)
+    bubblesFrame.Position = UDim2.new(0, 12, 0, 40)
+    bubblesFrame.ZIndex = 0
+    bubblesFrame.ClipsDescendants = true
+    bubblesFrame.Parent = mainFrame
+    local function SpawnBubble()
+        if not bubblesFrame.Parent then return end
+        local size = math.random(6, 14)
+        local bubble = Instance.new("Frame")
+        bubble.Size = UDim2.new(0, size, 0, size)
+        bubble.Position = UDim2.new(math.random(), 0, 1, math.random(0, 20))
+        bubble.BackgroundColor3 = Theme.Accent
+        bubble.BackgroundTransparency = 0.3
+        bubble.BorderSizePixel = 0
+        bubble.ZIndex = 0
+        bubble.Parent = bubblesFrame
+        local grad = Instance.new("UIGradient")
+        grad.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, Theme.AccentAlt), ColorSequenceKeypoint.new(1, Theme.Accent) })
+        grad.Rotation = math.random(0, 360)
+        grad.Parent = bubble
+        task.spawn(function()
+            local r = grad.Rotation
+            while bubble.Parent do r = (r + 25) % 360 grad.Rotation = r task.wait(0.3) end
+        end)
+        local dur = math.random(30, 50) / 10
+        local tween = TweenService:Create(bubble, TweenInfo.new(dur, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = UDim2.new(bubble.Position.X.Scale, 0, 0, -10), BackgroundTransparency = 1})
+        tween:Play()
+        tween.Completed:Connect(function() bubble:Destroy() end)
+    end
+    task.spawn(function() while mainFrame.Parent do SpawnBubble() task.wait(0.25) end end)
+    
+    local topbar = Instance.new("Frame")
+    topbar.Name = "Topbar"
+    topbar.Size = UDim2.new(1, 0, 0, 40)
+    topbar.BackgroundColor3 = Theme.Topbar
+    topbar.BorderSizePixel = 0
+    topbar.ZIndex = 5
+    topbar.Parent = mainFrame
+    Instance.new("UICorner", topbar).CornerRadius = UDim.new(0, 12)
+    local topMask = Instance.new("Frame")
+    topMask.Size = UDim2.new(1, 0, 0, 8)
+    topMask.Position = UDim2.new(0, 0, 1, -8)
+    topMask.BackgroundColor3 = topbar.BackgroundColor3
+    topMask.BorderSizePixel = 0
+    topMask.ZIndex = 5
+    topMask.Parent = topbar
+    
+    local logo = Instance.new("ImageLabel")
+    logo.BackgroundTransparency = 1
+    logo.Size = UDim2.new(0, 28, 0, 28)
+    logo.Position = UDim2.new(0, 8, 0.5, -14)
+    logo.Image = JUNKIE_LOGO_ID
+    logo.ZIndex = 6
+    logo.Parent = topbar
+    Instance.new("UICorner", logo).CornerRadius = UDim.new(1, 0)
+    
+    local title = Instance.new("TextLabel")
+    title.BackgroundTransparency = 1
+    title.Size = UDim2.new(0, 260, 1, 0)
+    title.Position = UDim2.new(0, 46, 0, 0)
+    title.FontFace = JunkieFont
+    title.RichText = true
+    title.Text = '<font color="#528CFF">Junkie</font> Development'
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.TextSize = 16
+    title.TextColor3 = Theme.TextMain
+    title.ZIndex = 6
+    title.Parent = topbar
+    
+    local tag = Instance.new("Frame")
+    tag.BackgroundColor3 = Theme.Accent
+    tag.Size = UDim2.new(0, 90, 0, 22)
+    tag.Position = UDim2.new(0, 46 + 260 + 8, 0.5, -11)
+    tag.BorderSizePixel = 0
+    tag.ZIndex = 6
+    tag.ClipsDescendants = true
+    tag.Parent = topbar
+    Instance.new("UICorner", tag).CornerRadius = UDim.new(0, 999)
+    local tagGradient = Instance.new("UIGradient")
+    tagGradient.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, Theme.AccentAlt), ColorSequenceKeypoint.new(1, Theme.Accent) })
+    tagGradient.Rotation = 45
+    tagGradient.Parent = tag
+    local tagLabel = Instance.new("TextLabel")
+    tagLabel.BackgroundTransparency = 1
+    tagLabel.Size = UDim2.new(1, -24, 1, 0)
+    tagLabel.Position = UDim2.new(0, 24, 0, 0)
+    tagLabel.FontFace = JunkieFont
+    tagLabel.Text = "Protected"
+    tagLabel.TextColor3 = Color3.fromRGB(230, 240, 255)
+    tagLabel.TextSize = 11
+    tagLabel.TextXAlignment = Enum.TextXAlignment.Left
+    tagLabel.ZIndex = 7
+    tagLabel.Parent = tag
+    local tagIconFrame = CreateIcon("shield-check", 14, tag, UDim2.new(0, 12, 0.5, 0), Color3.fromRGB(230, 240, 255))
+    
+    local function SetIconTransparency(frame, value)
+        if not frame then return end
+        for _, d in ipairs(frame:GetDescendants()) do if d:IsA("ImageLabel") or d:IsA("ImageButton") then d.ImageTransparency = value end end
+    end
+    local function AnimateTag(newIcon, newText)
+        if not tagLabel or not tagLabel.Parent then return end
+        local outInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+        TweenService:Create(tagLabel, outInfo, {Position = UDim2.new(0, 24, 0, 4), TextTransparency = 1}):Play()
+        if tagIconFrame then SetIconTransparency(tagIconFrame, 0) TweenService:Create(tagIconFrame, outInfo, {Position = UDim2.new(0, 12, 0.5, 4)}):Play() end
+        task.wait(0.2)
+        if tagIconFrame then tagIconFrame:Destroy() end
+        tagIconFrame = CreateIcon(newIcon, 14, tag, UDim2.new(0, 12, 0.5, -4), Color3.fromRGB(230, 240, 255))
+        tagIconFrame.ZIndex = 7
+        SetIconTransparency(tagIconFrame, 1)
+        tagLabel.Text = newText
+        tagLabel.Position = UDim2.new(0, 24, 0, -4)
+        local inInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        TweenService:Create(tagLabel, inInfo, {Position = UDim2.new(0, 24, 0, 0), TextTransparency = 0}):Play()
+        TweenService:Create(tagIconFrame, inInfo, {Position = UDim2.new(0, 12, 0.5, 0)}):Play()
+        task.spawn(function()
+            local t = 0 while t < 0.2 and tagIconFrame do t += 0.03 SetIconTransparency(tagIconFrame, 1 - math.clamp(t/0.2,0,1)) task.wait(0.03) end
+            SetIconTransparency(tagIconFrame, 0)
+        end)
+    end
+    task.spawn(function()
+        local state = 1
+        while tag.Parent do
+            if state == 1 then AnimateTag("shield-check", "Protected") state = 2 else AnimateTag("smile", "Secure") state = 1 end
+            task.wait(5)
+        end
+    end)
+
+    local close = Instance.new("TextButton")
+    close.BackgroundTransparency = 1
+    close.Size = UDim2.new(0, 24, 0, 24)
+    close.Position = UDim2.new(1, -32, 0.5, -12)
+    close.FontFace = JunkieFont
+    close.Text = "X"
+    close.TextSize = 16
+    close.TextColor3 = Theme.TextMuted
+    close.ZIndex = 6
+    close.Parent = topbar
+    
+    local subHeader = Instance.new("TextLabel")
+    subHeader.BackgroundTransparency = 1
+    subHeader.Size = UDim2.new(1, -40, 0, 30)
+    subHeader.Position = UDim2.new(0, 20, 0, 50) 
+    subHeader.FontFace = JunkieFont
+    subHeader.TextXAlignment = Enum.TextXAlignment.Left
+    subHeader.RichText = true
+    subHeader.Text = '<font color="#90AAFF">' .. Config.HubName .. '</font>'
+    subHeader.TextSize = 22
+    subHeader.TextColor3 = Theme.TextMain
+    subHeader.ZIndex = 2
+    subHeader.Parent = mainFrame
+
+    local content = Instance.new("Frame")
+    content.Size = UDim2.new(1, -24, 1, -110)
+    content.Position = UDim2.new(0, 12, 0, 92)
+    content.BackgroundTransparency = 1
+    content.ZIndex = 2
+    content.Parent = mainFrame
+    
+    local layout = Instance.new("UIListLayout", content)
+    layout.FillDirection = Enum.FillDirection.Horizontal
+    layout.Padding = UDim.new(0, 12)
+    
+    local leftCard = Instance.new("Frame")
+    leftCard.Size = UDim2.new(0.5, -6, 1, 0)
+    leftCard.BackgroundColor3 = Theme.Card
+    leftCard.BorderSizePixel = 0
+    leftCard.ZIndex = 2
+    leftCard.ClipsDescendants = true 
+    leftCard.Parent = content
+    Instance.new("UICorner", leftCard).CornerRadius = UDim.new(0, 10)
+    local leftStroke = Instance.new("UIStroke", leftCard)
+    leftStroke.Thickness = 1
+    leftStroke.Color = Theme.Border
+    
+    if Config.Discord.Enabled then
+        local discordInviteCode = Config.Discord.InviteCode
+        
+        local contentContainer = Instance.new("Frame", leftCard)
+        contentContainer.Size = UDim2.new(1, 0, 1, 0)
+        contentContainer.BackgroundTransparency = 1
+        contentContainer.ZIndex = 3
+        
+        local dcLayout = Instance.new("UIListLayout", contentContainer)
+        dcLayout.SortOrder = Enum.SortOrder.LayoutOrder
+        dcLayout.Padding = UDim.new(0, 6) 
+        dcLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+        dcLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        
+        local iconContainer = Instance.new("Frame", contentContainer)
+        iconContainer.Size = UDim2.new(0, 56, 0, 56)
+        iconContainer.BackgroundColor3 = Theme.Input
+        iconContainer.LayoutOrder = 1
+        Instance.new("UICorner", iconContainer).CornerRadius = UDim.new(1, 0)
+        Instance.new("UIStroke", iconContainer).Color = Theme.Border
+        
+        local iconImg = Instance.new("ImageLabel", iconContainer)
+        iconImg.Size = UDim2.new(1, 0, 1, 0)
+        iconImg.BackgroundTransparency = 1
+        iconImg.Image = Config.Discord.DefaultIcon
+        Instance.new("UICorner", iconImg).CornerRadius = UDim.new(1, 0)
+
+        local nameLabel = Instance.new("TextLabel", contentContainer)
+        nameLabel.BackgroundTransparency = 1
+        nameLabel.Size = UDim2.new(1, 0, 0, 20)
+        nameLabel.FontFace = Font.new("rbxassetid://" .. CUSTOM_FONT_ID, Enum.FontWeight.Bold)
+        nameLabel.Text = "Loading..."
+        nameLabel.TextColor3 = Theme.TextMain
+        nameLabel.TextSize = 16
+        nameLabel.LayoutOrder = 2
+        
+        local countLabel = Instance.new("TextLabel", contentContainer)
+        countLabel.BackgroundTransparency = 1
+        countLabel.Size = UDim2.new(1, 0, 0, 16)
+        countLabel.FontFace = JunkieFont
+        countLabel.Text = "..."
+        countLabel.TextColor3 = Color3.fromRGB(80, 200, 80)
+        countLabel.TextSize = 12
+        countLabel.LayoutOrder = 3
+
+        local joinBtn = Instance.new("TextButton", contentContainer)
+        joinBtn.Size = UDim2.new(0.9, 0, 0, 32)
+        joinBtn.BackgroundColor3 = Theme.Discord
+        joinBtn.Text = "Join Server"
+        joinBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        joinBtn.FontFace = Font.new("rbxassetid://" .. CUSTOM_FONT_ID, Enum.FontWeight.Bold)
+        joinBtn.TextSize = 13
+        joinBtn.LayoutOrder = 4
+        Instance.new("UICorner", joinBtn).CornerRadius = UDim.new(0, 6)
+        
+        joinBtn.MouseButton1Click:Connect(function()
+            if setclipboard then 
+                setclipboard("https://discord.gg/" .. discordInviteCode)
+                ShowNotification("discord_join")
+            end
+        end)
+
+        task.spawn(function()
+            local data = GetDiscordInviteData(discordInviteCode)
+            if data and data.guild then
+                nameLabel.Text = data.guild.name
+                countLabel.Text = tostring(data.approximate_presence_count) .. " Online  •  " .. tostring(data.approximate_member_count) .. " Members"
+                
+                if data.guild.icon then
+                    local iconUrl = "https://cdn.discordapp.com/icons/" .. data.guild.id .. "/" .. data.guild.icon .. ".png"
+                    local customAsset = GetCustomAsset(iconUrl, "discord_icon.png")
+                    pcall(function() iconImg.Image = customAsset end)
+                end
+            else
+                nameLabel.Text = "Discord Community"
+                countLabel.Text = "Unknown"
+            end
+        end)
+
+    else
+        local leftLayout = Instance.new("UIListLayout", leftCard)
+        leftLayout.SortOrder = Enum.SortOrder.LayoutOrder
+        leftLayout.Padding = UDim.new(0, 8) 
+        leftLayout.VerticalAlignment = Enum.VerticalAlignment.Center 
+
+        local function CreateInfoRow(parent, icon, title, initialText, layoutOrder)
+            local frame = Instance.new("Frame")
+            frame.Size = UDim2.new(1, -20, 0, 40)
+            frame.Position = UDim2.new(0, 10, 0, 0)
+            frame.BackgroundColor3 = Theme.Card
+            frame.BorderSizePixel = 0
+            frame.ZIndex = 5
+            frame.LayoutOrder = layoutOrder
+            frame.Parent = parent
+            Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+            local str = Instance.new("UIStroke", frame)
+            str.Thickness = 1
+            str.Color = Theme.Border
+            str.Transparency = 0.4
+            local cir = Instance.new("Frame")
+            cir.Size = UDim2.new(0, 26, 0, 26)
+            cir.Position = UDim2.new(0, 10, 0.5, -13)
+            cir.BackgroundColor3 = Theme.Accent
+            cir.BorderSizePixel = 0
+            cir.ZIndex = 6
+            cir.Parent = frame
+            Instance.new("UICorner", cir).CornerRadius = UDim.new(1, 0)
+            CreateIcon(icon, 16, cir, UDim2.new(0.5, 0, 0.5, 0), Color3.fromRGB(245, 245, 255))
+            local tit = Instance.new("TextLabel")
+            tit.BackgroundTransparency = 1
+            tit.Position = UDim2.new(0, 46, 0, 4)
+            tit.Size = UDim2.new(1, -50, 0, 14)
+            tit.FontFace = JunkieFont
+            tit.Text = title
+            tit.TextXAlignment = Enum.TextXAlignment.Left
+            tit.TextSize = 11
+            tit.TextColor3 = Theme.TextMuted
+            tit.ZIndex = 6
+            tit.Parent = frame
+            local res = Instance.new("TextLabel")
+            res.BackgroundTransparency = 1
+            res.Position = UDim2.new(0, 46, 0, 18)
+            res.Size = UDim2.new(1, -50, 0, 18)
+            res.FontFace = JunkieFont
+            res.TextXAlignment = Enum.TextXAlignment.Left
+            res.TextSize = 14
+            res.TextColor3 = Theme.TextMain
+            res.ZIndex = 6
+            res.Text = initialText
+            res.Parent = frame
+            return res
+        end
+        
+        local statusResultLabel = CreateInfoRow(leftCard, "lock-keyhole", "Key Status:", "Checking...", 1)
+        local lastKeyLabel = CreateInfoRow(leftCard, "clock-4", "Your Last Key Time:", "No records", 2)
+        local counterLabel = CreateInfoRow(leftCard, "app-window", "Total Valid Keys:", tostring(readCounter()), 3)
+        
+        local keysList = readKeys()
+        if #keysList > 0 then
+            statusResultLabel.Text = "Expired/Invalid"
+            statusResultLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
+        else
+            statusResultLabel.Text = "Not Found"
+            statusResultLabel.TextColor3 = Theme.TextMuted
+        end
+        local savedDate = readLastKeyDate()
+        if savedDate then lastKeyLabel.Text = savedDate end
+    end
+    
+    local right = Instance.new("Frame")
+    right.Size = UDim2.new(0.5, -6, 1, 0)
+    right.BackgroundTransparency = 1
+    right.ZIndex = 2
+    right.Parent = content
+    local rightPadding = Instance.new("UIPadding", right)
+    rightPadding.PaddingTop = UDim.new(0, 12)
+    rightPadding.PaddingLeft = UDim.new(0, 4)
+    rightPadding.PaddingRight = UDim.new(0, 4)
+    rightPadding.PaddingBottom = UDim.new(0, 4)
+    
+    local keyLabel = Instance.new("TextLabel")
+    keyLabel.Size = UDim2.new(1, 0, 0, 16)
+    keyLabel.Position = UDim2.new(0, 0, 0, -60)
+    keyLabel.BackgroundTransparency = 1
+    keyLabel.FontFace = JunkieFont
+    keyLabel.TextXAlignment = Enum.TextXAlignment.Left
+    keyLabel.Text = "Enter your key"
+    keyLabel.TextSize = 13
+    keyLabel.TextColor3 = Theme.TextMain
+    keyLabel.ZIndex = 3
+    keyLabel.Parent = right
+    
+    local keyBox = Instance.new("TextBox")
+    keyBox.Size = UDim2.new(1, 0, 0, 32)
+    keyBox.Position = UDim2.new(0, 0, 0, -40)
+    keyBox.BackgroundColor3 = Theme.Input
+    keyBox.BorderSizePixel = 0
+    keyBox.FontFace = JunkieFont
+    keyBox.TextXAlignment = Enum.TextXAlignment.Left
+    keyBox.PlaceholderText = "0000-0000-0000-0000"
+    keyBox.PlaceholderColor3 = Color3.fromRGB(150, 150, 170)
+    keyBox.Text = ""
+    keyBox.TextSize = 12
+    keyBox.TextColor3 = Theme.TextMain
+    keyBox.ClearTextOnFocus = false
+    keyBox.ZIndex = 3
+    keyBox.Parent = right
+    Instance.new("UICorner", keyBox).CornerRadius = UDim.new(0, 8)
+    local keyStroke = Instance.new("UIStroke", keyBox)
+    keyStroke.Thickness = 1
+    keyStroke.Color = Theme.Border
+    
+    local getKey
+    if Config.GetKeyButton then
+        getKey = Instance.new("TextButton")
+        getKey.Size = UDim2.new(0, 110, 0, 32)
+        getKey.Position = UDim2.new(0, 0, 0, 0)
+        getKey.BackgroundColor3 = Theme.Card
+        getKey.BorderSizePixel = 0
+        getKey.FontFace = JunkieFont
+        getKey.Text = Config.GetKeyButtonName 
+        getKey.TextSize = 13
+        getKey.TextColor3 = Theme.TextMain
+        getKey.AutoButtonColor = false
+        getKey.TextXAlignment = Enum.TextXAlignment.Left
+        getKey.ZIndex = 3
+        getKey.Parent = right
+        Instance.new("UICorner", getKey).CornerRadius = UDim.new(0, 6)
+        local getKeyPadding = Instance.new("UIPadding", getKey)
+        getKeyPadding.PaddingLeft = UDim.new(0, 32)
+        getKeyPadding.PaddingRight = UDim.new(0, 8)
+        
+        local iconObj = Icons.Image({ Icon = "key", Size = UDim2.fromOffset(16, 16), Colors = { Theme.TextMain } })
+        local getKeyIconFrame = iconObj.IconFrame
+        getKeyIconFrame.BackgroundTransparency = 1
+        getKeyIconFrame.AnchorPoint = Vector2.new(0, 0.5)
+        getKeyIconFrame.Position = UDim2.new(0, -23, 0.5, 0)
+        getKeyIconFrame.ZIndex = getKey.ZIndex + 1
+        for _, d in ipairs(getKeyIconFrame:GetDescendants()) do if d:IsA("ImageLabel") or d:IsA("ImageButton") then d.ZIndex = getKey.ZIndex + 1 end end
+        getKeyIconFrame.Parent = getKey
+    end
+    
+    local footerLabel = Instance.new("TextLabel")
+    footerLabel.BackgroundTransparency = 1
+    footerLabel.Size = UDim2.new(1, 0, 0, 16)
+    footerLabel.Position = UDim2.new(0, 0, 1, -60)
+    footerLabel.FontFace = JunkieFont
+    footerLabel.Text = "© 2026 Junkie Development"
+    footerLabel.TextColor3 = Theme.TextSoft
+    footerLabel.TextSize = 11
+    footerLabel.TextXAlignment = Enum.TextXAlignment.Center
+    footerLabel.ZIndex = 3
+    footerLabel.Parent = right
+    
+    local continueBtn = Instance.new("TextButton")
+    continueBtn.Size = UDim2.new(1, 0, 0, 38)
+    continueBtn.Position = UDim2.new(0, 0, 1, -38)
+    continueBtn.BackgroundColor3 = Theme.Accent
+    continueBtn.BorderSizePixel = 0
+    continueBtn.FontFace = JunkieFont
+    continueBtn.Text = "Continue"
+    continueBtn.TextSize = 15
+    continueBtn.TextColor3 = Color3.fromRGB(10, 15, 30)
+    continueBtn.AutoButtonColor = false
+    continueBtn.TextXAlignment = Enum.TextXAlignment.Left
+    continueBtn.ZIndex = 3
+    continueBtn.Parent = right
+    local contPadding = Instance.new("UIPadding", continueBtn)
+    contPadding.PaddingLeft = UDim.new(0, 14)
+    contPadding.PaddingRight = UDim.new(0, 26)
+    Instance.new("UICorner", continueBtn).CornerRadius = UDim.new(1, 0)
+    local continueGradient = Instance.new("UIGradient", continueBtn)
+    continueGradient.Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, Theme.AccentAlt), ColorSequenceKeypoint.new(1, Theme.Accent) })
+    CreateIcon("arrow-right", 18, continueBtn, UDim2.new(1, -14, 0.5, 0), Color3.fromRGB(10, 15, 30))
+    
+    TweenService:Create(mainFrame, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {GroupTransparency = 0}):Play()
+    TweenService:Create(uiScale, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
+    
+    local function closeUI()
+        local tClose = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+        TweenService:Create(mainFrame, tClose, {GroupTransparency = 1}):Play()
+        TweenService:Create(uiScale, tClose, {Scale = 0.8}):Play()
+        task.wait(0.3)
+        gui:Destroy()
+    end
+    close.MouseButton1Click:Connect(closeUI)
+    
+    if Config.GetKeyButton and getKey then
+        getKey.MouseButton1Click:Connect(function()
+            local linkToCopy = ""
+            if Config.CustomGetKey.Enabled then
+                linkToCopy = Config.CustomGetKey.Link
+            else
+                if Junkie.get_key_link then
+                    linkToCopy = Junkie.get_key_link()
+                else
+                    linkToCopy = "https://jnkie.com/key?service=" .. Junkie.service
+                end
+            end
+            if setclipboard then
+                setclipboard(linkToCopy)
+                ShowNotification("link_ok")
+            else
+                ShowNotification("link_fail")
+            end
+        end)
+    end
+    
+    local function handleKeySubmit()
+        local userKey = (keyBox.Text or ""):gsub("%s+", "")
+        if userKey == "" then ShowNotification("invalid") return end
+        
+        local isSuccess, status = validateKey(userKey)
+        
+        if isSuccess then
+            local keys = readKeys()
+            local exists = false
+            for _, k in ipairs(keys) do if k == userKey then exists = true break end end
+            if not exists then table.insert(keys, userKey) saveKeys(keys) end
+            saveLastKeyDateOnce()
+            local c = readCounter() + 1 saveCounter(c) 
+            ShowNotification("valid") ShowNotification("loading")
+            
+            local tClose = TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+            TweenService:Create(mainFrame, tClose, {GroupTransparency = 1}):Play()
+            TweenService:Create(uiScale, tClose, {Scale = 0.8}):Play()
+            
+            task.wait(0.35)
+            gui:Destroy()
+            RunSuccessCallback()
+        else
+            if status == "banned" then
+                ShowNotification("hwid_banned")
+            else
+                ShowNotification("invalid")
+            end
+        end
+    end
+    continueBtn.MouseButton1Click:Connect(handleKeySubmit)
+    keyBox.FocusLost:Connect(function(enterPressed) if enterPressed then handleKeySubmit() end end)
+    
+    ApplyFontRecursive(mainFrame)
+end
+
+-- [[ FUNÇÃO PRINCIPAL DE INICIALIZAÇÃO DA LIBRARY ]] --
+function AstralLib:Init(userConfig)
+    if getgenv().AstralKeySys then return end
+    getgenv().AstralKeySys = true
+
+    -- Mesclar configurações do usuário
+    if userConfig then
+        for k, v in pairs(userConfig) do
+            if k == "Theme" then
+                for tk, tv in pairs(v) do AstralLib.Theme[tk] = tv end
+            elseif k == "Junkie" then
+                 for jk, jv in pairs(v) do AstralLib.Config.Junkie[jk] = jv end
+            else
+                AstralLib.Config[k] = v
+            end
+        end
+    end
+
+    -- Configurar Junkie
+    Junkie.service = AstralLib.Config.Junkie.Service
+    Junkie.identifier = AstralLib.Config.Junkie.Identifier
+    Junkie.provider = AstralLib.Config.Junkie.Provider
+
+    -- Criar pasta
+    if not isfolder(AstralLib.Config.FolderName) then makefolder(AstralLib.Config.FolderName) end
+    local filePaths = GetFilePaths()
+    if writefile and not isfile(filePaths.key) then writefile(filePaths.key, "") end
+    if writefile and not isfile(filePaths.time) then writefile(filePaths.time, "") end
+    if writefile and not isfile(filePaths.counter) then writefile(filePaths.counter, "0") end
+
+    -- Iniciar fluxo
+    local ok, savedKey = trySavedKey()
+    if ok and savedKey then
+        if AstralLib.Config.CheckKeyUI then
+            ShowCheckUI() 
+        else
+            ShowNotification("valid")
+            ShowNotification("loading")
+            task.wait(1)
+            RunSuccessCallback()
+        end
+    else
+        CreateAstralKeyUI()
+    end
+end
+
+return AstralLib
